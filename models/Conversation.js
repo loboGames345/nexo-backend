@@ -23,9 +23,19 @@ const conversationSchema = new mongoose.Schema({
     required: true
   },
 
+  // Si tu ID está aquí, el chat no te sale en la lista
   deletedBy: {
     type: [String],
     default: []
+  },
+
+  // --- NUEVO: Control de historial vacío ---
+  // Guarda: { "userId": FechaDeLimpieza }
+  // Si el usuario re-agrega, actualizamos esta fecha para que vea el chat "nuevo".
+  clearedHistoryAt: {
+    type: Map,
+    of: Date,
+    default: {}
   },
 
   isGroup: {
@@ -38,13 +48,11 @@ const conversationSchema = new mongoose.Schema({
     trim: true
   },
   
-  // --- CAMBIO: Campo ÚNICO para el Fundador ---
   groupFounder: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
 
-  // Lista de Administradores (El fundador TAMBIÉN estará aquí para facilitar permisos)
   groupAdmin: [
     {
       type: mongoose.Schema.Types.ObjectId,
@@ -61,7 +69,12 @@ const conversationSchema = new mongoose.Schema({
     type: Map,
     of: Number,
     default: {}
-  }
+  },
+  
+  // --- NUEVO (Opcional): Bandera para saber si hay bloqueo visual ---
+  // No es estrictamente necesaria si usamos la logica de index, 
+  // pero ayuda si queremos persistir estados de UI.
+  // Lo manejaremos dinámicamente en el index.js
 
 }, { timestamps: true });
 

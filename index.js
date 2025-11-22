@@ -57,7 +57,6 @@ let socketUserMap = {};
 let onlineUsersMap = {};
 let activeChatMap = {};
 
-// Función auxiliar para contar usuarios únicos
 const getUniqueOnlineCount = () => {
   return Object.keys(onlineUsersMap).length;
 };
@@ -65,8 +64,6 @@ const getUniqueOnlineCount = () => {
 // 6. Lógica de Socket.IO
 io.on('connection', (socket) => {
   console.log('Conexión establecida:', socket.id);
-  
-  // Enviar conteo actual al recién conectado (aunque no esté logueado)
   socket.emit('updateUserCount', getUniqueOnlineCount());
   
   socket.on('registerUser', ({ userId, username }) => {
@@ -74,10 +71,7 @@ io.on('connection', (socket) => {
       userSocketMap[userId] = socket.id;
       socketUserMap[socket.id] = userId;
       onlineUsersMap[userId] = username;
-      
       console.log(`Usuario ${username} (${userId}) registrado.`);
-      
-      // Actualizar a TODOS el nuevo conteo y la lista
       io.emit('updateOnlineUsers', onlineUsersMap);
       io.emit('updateUserCount', getUniqueOnlineCount());
     }
@@ -98,8 +92,6 @@ io.on('connection', (socket) => {
       delete onlineUsersMap[userId];
       delete socketUserMap[socket.id];
       console.log(`Usuario ${userId} desconectado.`);
-      
-      // Actualizar a TODOS que alguien se fue
       io.emit('updateOnlineUsers', onlineUsersMap);
       io.emit('updateUserCount', getUniqueOnlineCount());
     }
@@ -111,145 +103,109 @@ io.on('connection', (socket) => {
 app.post('/register', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const existingUser = await User.findOne({ 
-      username: { $regex: `^${username}$`, $options: 'i' } 
-    });
-    if (existingUser) {
-      return res.status(400).json({ message: "El nombre de usuario ya existe." });
-    }
+    const existingUser = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i' } });
+    if (existingUser) return res.status(400).json({ message: "El nombre de usuario ya existe." });
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
     const newUser = new User({ username, password: hashedPassword });
     const savedUser = await newUser.save();
     const expiresIn = '1h';
-    const token = jwt.sign(
-      { userId: savedUser._id, username: savedUser.username },
-      JWT_SECRET,
-      { expiresIn: expiresIn }
-    );
+    const token = jwt.sign({ userId: savedUser._id, username: savedUser.username }, JWT_SECRET, { expiresIn: expiresIn });
     const profilePicForFrontend = savedUser.profilePictureUrl || DEFAULT_PROFILE_PIC;
-    res.status(201).json({
-      message: "¡Usuario registrado e iniciado sesión!",
-      token: token,
-      userId: savedUser._id,
-      username: savedUser.username,
-      profilePictureUrl: profilePicForFrontend,
-      bio: savedUser.bio
-    });
-  } catch (error) {
-    console.error("Error en /register:", error);
-    res.status(500).json({ message: "Error en el servidor." });
-  }
+    res.status(201).json({ message: "¡Usuario registrado e iniciado sesión!", token: token, userId: savedUser._id, username: savedUser.username, profilePictureUrl: profilePicForFrontend, bio: savedUser.bio });
+  } catch (error) { res.status(500).json({ message: "Error en el servidor." }); }
 });
 
 // 8. RUTA DE LOGIN
 app.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const user = await User.findOne({ 
-      username: { $regex: `^${username}$`, $options: 'i' } 
-    });
-    if (!user) {
-      return res.status(400).json({ message: "Usuario o contraseña incorrectos." });
-    }
+    const user = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i' } });
+    if (!user) return res.status(400).json({ message: "Usuario o contraseña incorrectos." });
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ message: "Usuario o contraseña incorrectos." });
-    }
+    if (!isMatch) return res.status(400).json({ message: "Usuario o contraseña incorrectos." });
     const expiresIn = '1h';
-    const token = jwt.sign(
-      { userId: user._id, username: user.username },
-      JWT_SECRET,
-      { expiresIn: expiresIn }
-    );
+    const token = jwt.sign({ userId: user._id, username: user.username }, JWT_SECRET, { expiresIn: expiresIn });
     const profilePicForFrontend = user.profilePictureUrl || DEFAULT_PROFILE_PIC;
-    res.status(200).json({
-      message: "¡Inicio de sesión exitoso!",
-      token: token,
-      userId: user._id,
-      username: user.username,
-      profilePictureUrl: profilePicForFrontend,
-      bio: user.bio
-    });
-  } catch (error) {
-    console.error("Error en /login:", error);
-    res.status(500).json({ message: "Error en el servidor." });
-  }
+    res.status(200).json({ message: "¡Inicio de sesión exitoso!", token: token, userId: user._id, username: user.username, profilePictureUrl: profilePicForFrontend, bio: user.bio });
+  } catch (error) { res.status(500).json({ message: "Error en el servidor." }); }
 });
 
-// 9. Ruta de prueba (/)
-app.get('/', (req, res) => {
-  res.json({ message: "¡Servidor de chat funcionando y conectado a la BD!" });
-});
+// 9. Ruta de prueba
+app.get('/', (req, res) => res.json({ message: "¡Servidor de chat funcionando!" }));
 
-// 10. Ruta protegida de prueba
+// 10. Ruta protegida
 app.get('/test-protected', authMiddleware, async (req, res) => {
   const user = await User.findById(req.userId).select('-password');
   const profilePicForFrontend = user.profilePictureUrl || DEFAULT_PROFILE_PIC;
-  res.status(200).json({
-    message: `¡Hola, ${req.user.username}! Has accedido a una ruta protegida.`,
-    userData: {
-      userId: user._id,
-      username: user.username,
-      profilePictureUrl: profilePicForFrontend,
-      bio: user.bio
-    }
-  });
+  res.status(200).json({ message: `¡Hola!`, userData: { userId: user._id, username: user.username, profilePictureUrl: profilePicForFrontend, bio: user.bio } });
 });
 
-// 11. Rutas de Conversaciones
-// (INICIAR UNA NUEVA CONVERSACIÓN 1-a-1)
+// --- 11. RUTAS DE CONVERSACIONES ---
+
 app.post('/conversations', authMiddleware, async (req, res) => {
   try {
     const myId = req.user.userId;
     const { otherUsername } = req.body;
-    const otherUser = await User.findOne({ 
-      username: { $regex: `^${otherUsername}$`, $options: 'i' } 
-    });
-    if (!otherUser) {
-      return res.status(404).json({ message: "El usuario no existe." });
-    }
-    if (otherUser._id.toString() === myId) {
-      return res.status(400).json({ message: "No puedes enviarte una solicitud a ti mismo." });
-    }
+    const otherUser = await User.findOne({ username: { $regex: `^${otherUsername}$`, $options: 'i' } });
+    
+    if (!otherUser) return res.status(404).json({ message: "El usuario no existe." });
+    if (otherUser._id.toString() === myId) return res.status(400).json({ message: "No puedes enviarte una solicitud a ti mismo." });
+    
+    // Verificar bloqueos
     const iBlockedThem = await Block.findOne({ blockerId: myId, blockedId: otherUser._id });
-    if (iBlockedThem) {
-      return res.status(403).json({ message: "Has bloqueado a este usuario. Debes desbloquearlo para iniciar un chat." });
-    }
+    if (iBlockedThem) return res.status(403).json({ message: "Has bloqueado a este usuario. Debes desbloquearlo para iniciar un chat." });
     const theyBlockedMe = await Block.findOne({ blockerId: otherUser._id, blockedId: myId });
-    if (theyBlockedMe) {
-      return res.status(403).json({ message: "Este usuario te ha bloqueado." });
-    }
+    if (theyBlockedMe) return res.status(403).json({ message: "Este usuario te ha bloqueado." });
+
     let conversation = await Conversation.findOne({
       participants: { $all: [myId, otherUser._id] },
       isGroup: false
     });
+
     if (conversation) {
+       if (conversation.deletedBy.includes(myId)) {
+           conversation.deletedBy = conversation.deletedBy.filter(id => id !== myId);
+           conversation.clearedHistoryAt.set(myId, Date.now());
+           if (conversation.status === 'pending') conversation.status = 'active';
+           await conversation.save();
+       }
+
        const populatedConv = await Conversation.findById(conversation._id)
-          .populate('participants', 'username profilePictureUrl')
+          .populate('participants', 'username profilePictureUrl bio')
           .populate('initiatedBy', 'username');
-      return res.status(200).json(populatedConv);
+       
+       const receiverId = otherUser._id.toString();
+       const receiverSocketId = userSocketMap[receiverId];
+       if (receiverSocketId) {
+          io.to(receiverSocketId).emit('chatReadded', populatedConv);
+       }
+
+       return res.status(200).json(populatedConv);
     }
+
     const unreadMap = new Map();
     unreadMap.set(myId, 0);
     unreadMap.set(otherUser._id.toString(), 0);
+    
     const newConversation = new Conversation({
       participants: [myId, otherUser._id],
       initiatedBy: myId,
-      status: 'pending',
+      status: 'pending', 
       isGroup: false,
       groupAdmin: [myId],
       unreadCounts: unreadMap
     });
     const savedConversation = await newConversation.save();
-     const populatedConversation = await Conversation.findById(savedConversation._id)
-        .populate('participants', 'username profilePictureUrl')
+    
+    const populatedConversation = await Conversation.findById(savedConversation._id)
+        .populate('participants', 'username profilePictureUrl bio')
         .populate('initiatedBy', 'username');
+        
     const receiverId = otherUser._id.toString();
     const receiverSocketId = userSocketMap[receiverId];
     if (receiverSocketId) {
       io.to(receiverSocketId).emit('newChatRequest', populatedConversation);
-      console.log(`Enviando 'newChatRequest' a ${receiverId}`);
     }
     res.status(201).json(populatedConversation);
   } catch (error) {
@@ -258,90 +214,139 @@ app.post('/conversations', authMiddleware, async (req, res) => {
   }
 });
 
-// (OBTENER TODAS MIS CONVERSACIONES)
 app.get('/conversations', authMiddleware, async (req, res) => {
   try {
     const myId = req.user.userId;
-    const conversations = await Conversation.find({
+    
+    let conversations = await Conversation.find({
       participants: { $in: [myId] },
       deletedBy: { $nin: [myId] }
     })
-    .populate('participants', 'username profilePictureUrl')
+    .populate('participants', 'username profilePictureUrl bio')
     .populate('initiatedBy', 'username profilePictureUrl')
     .populate('groupAdmin', 'username profilePictureUrl')
     .populate('groupFounder', 'username profilePictureUrl'); 
-    res.status(200).json(conversations);
+
+    const blocks = await Block.find({ $or: [{ blockerId: myId }, { blockedId: myId }] });
+    const blockedUserIds = new Set();
+    blocks.forEach(b => {
+        if (b.blockerId.toString() === myId) blockedUserIds.add(b.blockedId.toString());
+        if (b.blockedId.toString() === myId) blockedUserIds.add(b.blockerId.toString());
+    });
+
+    const conversationsWithBlockStatus = conversations.map(conv => {
+        const convObj = conv.toObject();
+        if (!convObj.isGroup) {
+            const other = convObj.participants.find(p => p._id.toString() !== myId);
+            if (other && blockedUserIds.has(other._id.toString())) {
+                convObj.hasBlock = true;
+            } else {
+                convObj.hasBlock = false;
+            }
+        } else {
+            convObj.hasBlock = false;
+        }
+        return convObj;
+    });
+
+    res.status(200).json(conversationsWithBlockStatus);
   } catch (error) {
     console.error("Error en GET /conversations:", error);
     res.status(500).json({ message: "Error en el servidor." });
   }
 });
 
-// (ACEPTAR CHAT)
 app.post('/conversations/:id/accept', authMiddleware, async (req, res) => {
   try {
     const { id: conversationId } = req.params;
     const myId = req.user.userId;
     const conversation = await Conversation.findById(conversationId);
-    if (!conversation) {
-      return res.status(404).json({ message: "Conversación no encontrada."});
-    }
-    if (!conversation.participants.includes(myId) || conversation.initiatedBy.toString() === myId) {
-      return res.status(403).json({ message: "No autorizado." });
-    }
+    if (!conversation) return res.status(404).json({ message: "Conversación no encontrada."});
+    if (!conversation.participants.includes(myId) || conversation.initiatedBy.toString() === myId) return res.status(403).json({ message: "No autorizado." });
+    
     const initiatorId = conversation.initiatedBy.toString();
     const iBlockedThem = await Block.findOne({ blockerId: myId, blockedId: initiatorId });
-    if (iBlockedThem) {
-      return res.status(403).json({ message: "Has bloqueado a este usuario. Debes desbloquearlo para aceptar." });
-    }
+    if (iBlockedThem) return res.status(403).json({ message: "Has bloqueado a este usuario." });
     const theyBlockedMe = await Block.findOne({ blockerId: initiatorId, blockedId: myId });
-    if (theyBlockedMe) {
-      return res.status(403).json({ message: "Este usuario te ha bloqueado." });
-    }
-    if (conversation.status === 'active') {
-      return res.status(400).json({ message: "El chat ya está activo."});
-    }
+    if (theyBlockedMe) return res.status(403).json({ message: "Este usuario te ha bloqueado." });
+
+    if (conversation.status === 'active') return res.status(400).json({ message: "El chat ya está activo."});
+    
     conversation.unreadCounts.set(myId, 0);
     conversation.status = 'active';
     await conversation.save();
+    
     const populatedConversation = await Conversation.findById(conversation._id)
-        .populate('participants', 'username profilePictureUrl')
+        .populate('participants', 'username profilePictureUrl bio')
         .populate('initiatedBy', 'username');
+    
     const initiatorSocketId = userSocketMap[initiatorId];
     if (initiatorSocketId) {
       io.to(initiatorSocketId).emit('chatRequestAccepted', populatedConversation);
-      console.log(`Enviando 'chatRequestAccepted' a ${initiatorId}`);
     }
+    const mySocketId = userSocketMap[myId];
+    if (mySocketId) {
+      io.to(mySocketId).emit('chatRequestAccepted', populatedConversation);
+    }
+
     res.status(200).json(populatedConversation);
   } catch (error) {
-    console.error("Error en POST /conversations/:id/accept:", error);
+    console.error("Error en POST accept:", error);
     res.status(500).json({ message: "Error en el servidor." });
   }
 });
 
-// 12. Rutas de Mensajes
-// (OBTENER TODOS LOS MENSAJES DE UN CHAT)
+// --- NUEVO: RUTA PARA RECHAZAR SOLICITUD ---
+app.post('/conversations/:id/reject', authMiddleware, async (req, res) => {
+  try {
+    const { id: conversationId } = req.params;
+    const myId = req.user.userId;
+    const conversation = await Conversation.findById(conversationId);
+
+    if (!conversation) return res.status(404).json({ message: "Solicitud no encontrada." });
+    if (conversation.status !== 'pending') return res.status(400).json({ message: "Esta solicitud ya no está pendiente." });
+    
+    // Solo el receptor (no el iniciador) puede rechazar
+    if (conversation.initiatedBy.toString() === myId) {
+        return res.status(403).json({ message: "No puedes rechazar tu propia solicitud." });
+    }
+
+    // Eliminamos la conversación por completo
+    await Conversation.findByIdAndDelete(conversationId);
+
+    res.status(200).json({ message: "Solicitud rechazada." });
+  } catch (error) {
+    console.error("Error en POST reject:", error);
+    res.status(500).json({ message: "Error en el servidor." });
+  }
+});
+
+// --- 12. RUTAS DE MENSAJES ---
+
 app.get('/conversations/:id/messages', authMiddleware, async (req, res) => {
   try {
     const { id: conversationId } = req.params;
     const myId = req.user.userId;
     const conversation = await Conversation.findById(conversationId);
-    if (!conversation) {
-      return res.status(404).json({ message: "Conversación no encontrada." });
-    }
-    if (conversation.status !== 'active' || !conversation.participants.includes(myId)) {
-      return res.status(403).json({ message: "No autorizado para ver esta conversación." });
-    }
-    const messages = await Message.find({ conversationId: conversationId })
-      .populate('sender', 'username profilePictureUrl');
+    
+    if (!conversation) return res.status(404).json({ message: "No encontrada." });
+    if (conversation.status !== 'active' || !conversation.participants.includes(myId)) return res.status(403).json({ message: "No autorizado." });
+
+    const myClearDate = conversation.clearedHistoryAt.get(myId) || new Date(0);
+
+    const messages = await Message.find({ 
+        conversationId: conversationId,
+        createdAt: { $gt: myClearDate }
+    })
+    .populate('sender', 'username profilePictureUrl');
+    
     res.status(200).json(messages);
   } catch (error) {
-    console.error("Error en GET /conversations/:id/messages:", error);
+    console.error("Error en GET messages:", error);
     res.status(500).json({ message: "Error en el servidor." });
   }
 });
 
-// (ENVIAR UN MENSAJE A UN CHAT)
 app.post('/conversations/:id/messages', authMiddleware, async (req, res) => {
   try {
     const { id: conversationId } = req.params;
@@ -350,84 +355,75 @@ app.post('/conversations/:id/messages', authMiddleware, async (req, res) => {
     
     const conversation = await Conversation.findById(conversationId);
     if (!conversation || !conversation.participants.includes(myId) || conversation.status !== 'active') {
-       return res.status(403).json({ message: "No autorizado para enviar mensajes." });
+       return res.status(403).json({ message: "No autorizado." });
     }
 
     if (!conversation.isGroup) {
       const otherUserId = conversation.participants.find(p => p.toString() !== myId);
       const iBlockedThem = await Block.findOne({ blockerId: myId, blockedId: otherUserId });
-      if (iBlockedThem) {
-        return res.status(403).json({ message: "Has bloqueado a este usuario. No puedes enviarle mensajes." });
-      }
+      if (iBlockedThem) return res.status(403).json({ message: "Has bloqueado a este usuario." });
       const theyBlockedMe = await Block.findOne({ blockerId: otherUserId, blockedId: myId });
-      if (theyBlockedMe) {
-        return res.status(403).json({ message: "Este usuario te ha bloqueado. No puedes enviarle mensajes." });
-      }
+      if (theyBlockedMe) return res.status(403).json({ message: "Este usuario te ha bloqueado." });
     }
 
-    conversation.deletedBy = [];
+    conversation.deletedBy = conversation.deletedBy || [];
+    
     conversation.participants.forEach(pId => {
       const pIdString = pId.toString();
       if (pIdString !== myId) {
-        const socketId = userSocketMap[pIdString];
-        const activeChatId = activeChatMap[socketId];
-        if (activeChatId !== conversationId) {
-          const currentCount = conversation.unreadCounts.get(pIdString) || 0;
-          conversation.unreadCounts.set(pIdString, currentCount + 1);
+        if (!conversation.deletedBy.includes(pIdString)) {
+            const socketId = userSocketMap[pIdString];
+            const activeChatId = activeChatMap[socketId];
+            if (activeChatId !== conversationId) {
+                const currentCount = conversation.unreadCounts.get(pIdString) || 0;
+                conversation.unreadCounts.set(pIdString, currentCount + 1);
+            }
         }
       }
     });
     
     await conversation.save();
     
-    const newMessage = new Message({
-      conversationId: conversationId,
-      sender: myId,
-      content: content,
-      type: 'text'
-    });
+    const newMessage = new Message({ conversationId: conversationId, sender: myId, content: content, type: 'text' });
     const savedMessage = await newMessage.save();
-    const populatedMessage = await Message.findById(savedMessage._id)
-                                          .populate('sender', 'username profilePictureUrl');
+    const populatedMessage = await Message.findById(savedMessage._id).populate('sender', 'username profilePictureUrl');
+    
     const populatedConv = await Conversation.findById(conversation._id)
-        .populate('participants', 'username profilePictureUrl')
+        .populate('participants', 'username profilePictureUrl bio')
         .populate('groupAdmin', 'username')
         .populate('groupFounder', 'username');
 
     conversation.participants.forEach(pId => {
-      const socketId = userSocketMap[pId.toString()];
-      if (socketId) {
-        io.to(socketId).emit('newMessage', populatedMessage);
-        io.to(socketId).emit('conversationUpdated', populatedConv);
+      const pIdString = pId.toString();
+      if (!conversation.deletedBy.includes(pIdString)) {
+          const socketId = userSocketMap[pIdString];
+          if (socketId) {
+            io.to(socketId).emit('newMessage', populatedMessage);
+            io.to(socketId).emit('conversationUpdated', populatedConv);
+          }
       }
     });
 
     res.status(201).json(populatedMessage);
   } catch (error) {
-    console.error("Error en POST /conversations/:id/messages:", error);
+    console.error("Error en POST messages:", error);
     res.status(500).json({ message: "Error en el servidor." });
   }
 });
 
-// 13. RUTA DE BÚSQUEDA DE USUARIOS
+// 13. Búsqueda
 app.get('/users/search', authMiddleware, async (req, res) => {
   try {
     const { query } = req.query;
     const myId = req.user.userId;
-    if (!query) {
-      return res.json([]);
-    }
-    const blocks = await Block.find({
-      $or: [{ blockerId: myId }, { blockedId: myId }]
-    });
-    const blockedIds = blocks.map(block => {
-      return block.blockerId.toString() === myId ? block.blockedId.toString() : block.blockerId.toString();
-    });
+    if (!query) return res.json([]);
+    const blocks = await Block.find({ $or: [{ blockerId: myId }, { blockedId: myId }] });
+    const blockedIds = blocks.map(b => b.blockerId.toString() === myId ? b.blockedId.toString() : b.blockerId.toString());
     const users = await User.find({
       username: { $regex: query, $options: 'i' },
       _id: { $ne: myId, $nin: blockedIds }
     })
-    .select('username');
+    .select('username profilePictureUrl bio');
     res.json(users);
   } catch (error) {
     console.error("Error en GET /users/search:", error);
@@ -435,7 +431,7 @@ app.get('/users/search', authMiddleware, async (req, res) => {
   }
 });
 
-// 14. RUTA PARA BORRAR USUARIO (CON LÓGICA DE SUCESIÓN DE FUNDADOR)
+// 14. Borrar usuario
 app.delete('/users/me', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -444,7 +440,6 @@ app.delete('/users/me', authMiddleware, async (req, res) => {
     const userConversations = await Conversation.find({ participants: userId });
 
     for (const conv of userConversations) {
-      
       if (conv.isGroup) {
         const newParticipants = conv.participants.filter(p => p.toString() !== userId);
 
@@ -453,10 +448,8 @@ app.delete('/users/me', authMiddleware, async (req, res) => {
           await Message.deleteMany({ conversationId: conv._id });
         } else {
           conv.participants = newParticipants;
-          
           let newAdmins = conv.groupAdmin.filter(id => id.toString() !== userId);
           
-          // LÓGICA DE SUCESIÓN
           if (conv.groupFounder && conv.groupFounder.toString() === userId) {
              if (newAdmins.length > 0) {
                 conv.groupFounder = newAdmins[0];
@@ -465,11 +458,9 @@ app.delete('/users/me', authMiddleware, async (req, res) => {
                 newAdmins.push(newParticipants[0]);
              }
           }
-
           if (newAdmins.length === 0 && newParticipants.length > 0) {
              newAdmins.push(newParticipants[0]);
           }
-
           conv.groupAdmin = newAdmins;
           await conv.save();
 
@@ -482,7 +473,7 @@ app.delete('/users/me', authMiddleware, async (req, res) => {
           await sysMsg.save();
 
           const populatedGroup = await Conversation.findById(conv._id)
-            .populate('participants', 'username profilePictureUrl')
+            .populate('participants', 'username profilePictureUrl bio')
             .populate('groupAdmin', 'username')
             .populate('groupFounder', 'username');
 
@@ -496,6 +487,13 @@ app.delete('/users/me', authMiddleware, async (req, res) => {
         }
 
       } else {
+        const otherUserId = conv.participants.find(p => p.toString() !== userId);
+        if (otherUserId) {
+           const otherSocketId = userSocketMap[otherUserId.toString()];
+           if (otherSocketId) {
+              io.to(otherSocketId).emit('conversationDeleted', conv._id);
+           }
+        }
         await Conversation.findByIdAndDelete(conv._id);
         await Message.deleteMany({ conversationId: conv._id });
       }
@@ -512,7 +510,7 @@ app.delete('/users/me', authMiddleware, async (req, res) => {
   }
 });
 
-// 15. RUTA PARA BORRAR/SALIR CONVERSACIÓN (CON LÓGICA DE SUCESIÓN DE FUNDADOR)
+// 15. RUTA PARA DESAGREGAR / SALIR DE GRUPO
 app.delete('/conversations/:id', authMiddleware, async (req, res) => {
   try {
     const { id: conversationId } = req.params;
@@ -534,10 +532,8 @@ app.delete('/conversations/:id', authMiddleware, async (req, res) => {
       } 
       
       conversation.participants = newParticipants;
-      
       let newAdmins = conversation.groupAdmin.filter(id => id.toString() !== myId);
 
-      // LÓGICA DE SUCESIÓN
       if (conversation.groupFounder && conversation.groupFounder.toString() === myId) {
          if (newAdmins.length > 0) {
             conversation.groupFounder = newAdmins[0];
@@ -559,7 +555,7 @@ app.delete('/conversations/:id', authMiddleware, async (req, res) => {
       await sysMsg.save();
 
       const populatedGroup = await Conversation.findById(conversationId)
-        .populate('participants', 'username profilePictureUrl')
+        .populate('participants', 'username profilePictureUrl bio')
         .populate('groupAdmin', 'username')
         .populate('groupFounder', 'username');
 
@@ -574,10 +570,26 @@ app.delete('/conversations/:id', authMiddleware, async (req, res) => {
       return res.status(200).json({ message: "Has salido del grupo." });
 
     } else {
+      
       await Conversation.findByIdAndUpdate(conversationId, {
         $addToSet: { deletedBy: myId }
       });
-      res.status(200).json({ message: "Conversación eliminada de tu vista." });
+      
+      conversation.clearedHistoryAt.set(myId, Date.now());
+      await conversation.save();
+
+      const otherUserId = conversation.participants.find(p => p.toString() !== myId);
+      if (otherUserId) {
+          const socketId = userSocketMap[otherUserId.toString()];
+          if (socketId) {
+              io.to(socketId).emit('unfriendedBy', { 
+                  unfrienderName: myUsername, 
+                  unfrienderId: myId 
+              });
+          }
+      }
+
+      res.status(200).json({ message: "Usuario desagregado." });
     }
 
   } catch (error) {
@@ -598,7 +610,7 @@ app.post('/conversations/:id/read', authMiddleware, async (req, res) => {
     conversation.unreadCounts.set(myId, 0);
     await conversation.save();
     const populatedConv = await Conversation.findById(conversation._id)
-        .populate('participants', 'username profilePictureUrl')
+        .populate('participants', 'username profilePictureUrl bio')
         .populate('groupAdmin', 'username')
         .populate('groupFounder', 'username');
     res.status(200).json(populatedConv);
@@ -608,7 +620,20 @@ app.post('/conversations/:id/read', authMiddleware, async (req, res) => {
   }
 });
 
-// 17. RUTA PARA BLOQUEAR USUARIO
+// 17. RUTAS DE BLOQUEO
+
+app.get('/users/me/blocked', authMiddleware, async (req, res) => {
+  try {
+    const myId = req.user.userId;
+    const blocks = await Block.find({ blockerId: myId });
+    const blockedIds = blocks.map(b => b.blockedId.toString());
+    res.json(blockedIds);
+  } catch (error) {
+    console.error("Error en GET /users/me/blocked:", error);
+    res.status(500).json({ message: "Error en el servidor." });
+  }
+});
+
 app.post('/users/:id/block', authMiddleware, async (req, res) => {
   try {
     const myId = req.user.userId;
@@ -616,29 +641,78 @@ app.post('/users/:id/block', authMiddleware, async (req, res) => {
     if (myId === blockedId) {
       return res.status(400).json({ message: "No puedes bloquearte a ti mismo." });
     }
-    const theyBlockedMe = await Block.findOne({ blockerId: blockedId, blockedId: myId });
-    if (theyBlockedMe) {
-      return res.status(403).json({ message: "No puedes bloquear a un usuario que ya te ha bloqueado." });
+    const existingBlock = await Block.findOne({ blockerId: myId, blockedId: blockedId });
+    if (existingBlock) {
+      return res.status(200).json({ message: "Este usuario ya está bloqueado." });
     }
-    const iBlockedThem = await Block.findOne({ blockerId: myId, blockedId: blockedId });
-    if (iBlockedThem) {
-      iBlockedThem.createdAt = Date.now();
-      await iBlockedThem.save();
-      return res.status(200).json({ message: "Bloqueo de 1 hora actualizado." });
-    }
+    
     const newBlock = new Block({
       blockerId: myId,
       blockedId: blockedId
     });
     await newBlock.save();
-    res.status(201).json({ message: "Usuario bloqueado por 1 hora." });
+
+    // Notificar al bloqueado
+    const blockedSocket = userSocketMap[blockedId];
+    if (blockedSocket) {
+      io.to(blockedSocket).emit('blockedBy', { 
+        blockerId: myId,
+        blockerName: req.user.username 
+      });
+    }
+
+    res.status(201).json({ message: "Usuario bloqueado permanentemente." });
   } catch (error) {
     console.error("Error en POST /users/:id/block:", error);
     res.status(500).json({ message: "Error en el servidor." });
   }
 });
 
-// 18. RUTA PARA CREAR GRUPOS (ASIGNA FUNDADOR)
+app.delete('/users/:id/block', authMiddleware, async (req, res) => {
+  try {
+    const myId = req.user.userId;
+    const { id: blockedId } = req.params;
+    const deleted = await Block.findOneAndDelete({ blockerId: myId, blockedId: blockedId });
+    if (!deleted) {
+      return res.status(404).json({ message: "No tenías bloqueado a este usuario." });
+    }
+
+    // Notificar desbloqueo
+    const blockedSocket = userSocketMap[blockedId];
+    if (blockedSocket) {
+      io.to(blockedSocket).emit('unblockedBy', { 
+        blockerId: myId,
+        blockerName: req.user.username 
+      });
+    }
+
+    res.status(200).json({ message: "Usuario desbloqueado." });
+  } catch (error) {
+    console.error("Error en DELETE /users/:id/block:", error);
+    res.status(500).json({ message: "Error en el servidor." });
+  }
+});
+
+app.get('/users/:id/check-block', authMiddleware, async (req, res) => {
+  try {
+    const myId = req.user.userId;
+    const { id: otherId } = req.params;
+
+    const iBlockedThem = await Block.exists({ blockerId: myId, blockedId: otherId });
+    const theyBlockedMe = await Block.exists({ blockerId: otherId, blockedId: myId });
+
+    res.json({
+      iBlockedThem: !!iBlockedThem,
+      theyBlockedMe: !!theyBlockedMe
+    });
+  } catch (error) {
+    console.error("Error en check-block:", error);
+    res.status(500).json({ message: "Error" });
+  }
+});
+
+
+// 18. RUTA PARA CREAR GRUPOS
 app.post('/groups', authMiddleware, async (req, res) => {
   try {
     const { groupName, participants } = req.body;
@@ -673,7 +747,7 @@ app.post('/groups', authMiddleware, async (req, res) => {
     await sysMsg.save();
 
     const populatedGroup = await Conversation.findById(newGroup._id)
-      .populate('participants', 'username profilePictureUrl')
+      .populate('participants', 'username profilePictureUrl bio')
       .populate('groupAdmin', 'username')
       .populate('groupFounder', 'username');
 
@@ -727,7 +801,7 @@ app.post('/groups/:id/add-members', authMiddleware, async (req, res) => {
       },
       { new: true }
     )
-    .populate('participants', 'username profilePictureUrl')
+    .populate('participants', 'username profilePictureUrl bio')
     .populate('groupAdmin', 'username')
     .populate('groupFounder', 'username');
 
@@ -827,6 +901,13 @@ app.put('/profile/update', authMiddleware, async (req, res) => {
       { new: true }
     );
 
+    io.emit('userProfileUpdated', {
+      userId: user._id,
+      username: user.username,
+      bio: user.bio,
+      profilePictureUrl: user.profilePictureUrl
+    });
+
     const expiresIn = '1h';
     const token = jwt.sign(
       { userId: user._id, username: user.username },
@@ -872,7 +953,7 @@ app.put('/groups/:id/details', authMiddleware, async (req, res) => {
     await conversation.save();
     
     const populatedGroup = await Conversation.findById(conversationId)
-      .populate('participants', 'username profilePictureUrl')
+      .populate('participants', 'username profilePictureUrl bio')
       .populate('groupAdmin', 'username')
       .populate('groupFounder', 'username');
       
@@ -928,7 +1009,7 @@ app.put('/groups/:id/promote', authMiddleware, async (req, res) => {
     await sysMsg.save();
 
     const populatedGroup = await Conversation.findById(conversationId)
-      .populate('participants', 'username profilePictureUrl')
+      .populate('participants', 'username profilePictureUrl bio')
       .populate('groupAdmin', 'username')
       .populate('groupFounder', 'username');
 
@@ -991,7 +1072,7 @@ app.put('/groups/:id/demote', authMiddleware, async (req, res) => {
     await sysMsg.save();
 
     const populatedGroup = await Conversation.findById(conversationId)
-      .populate('participants', 'username profilePictureUrl')
+      .populate('participants', 'username profilePictureUrl bio')
       .populate('groupAdmin', 'username')
       .populate('groupFounder', 'username');
 
@@ -1069,7 +1150,7 @@ app.put('/groups/:id/kick', authMiddleware, async (req, res) => {
     await sysMsg.save();
 
     const populatedGroup = await Conversation.findById(conversationId)
-      .populate('participants', 'username profilePictureUrl')
+      .populate('participants', 'username profilePictureUrl bio')
       .populate('groupAdmin', 'username')
       .populate('groupFounder', 'username');
 
@@ -1151,7 +1232,7 @@ app.post('/groups/:id/avatar', authMiddleware, upload.single('groupPic'), async 
     await sysMsg.save();
 
     const populatedGroup = await Conversation.findById(conversationId)
-      .populate('participants', 'username profilePictureUrl')
+      .populate('participants', 'username profilePictureUrl bio')
       .populate('groupAdmin', 'username')
       .populate('groupFounder', 'username');
 
