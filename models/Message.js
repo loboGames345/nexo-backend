@@ -20,15 +20,27 @@ const messageSchema = new mongoose.Schema({
   // El contenido del mensaje
   content: {
     type: String,
-    required: true,
-    trim: true
+    trim: true,
+    default: ''
   },
   
-  // --- NUEVO: Tipo de mensaje ---
+  // Array para guardar URLs de fotos/videos
+  mediaUrls: {
+    type: [String],
+    default: []
+  },
+
+  // Tipo de mensaje
   type: {
     type: String,
-    enum: ['text', 'system'], // 'text' es normal, 'system' es aviso (azul/gris centrado)
+    enum: ['text', 'system', 'image', 'video', 'mixed'], 
     default: 'text'
+  },
+
+  // --- NUEVO: Bandera para saber si fue borrado ---
+  isDeleted: {
+    type: Boolean,
+    default: false
   }
 
 }, { timestamps: true });

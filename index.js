@@ -24,13 +24,14 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"]
+    methods: ["GET", "POST", "PUT", "DELETE"]
   }
 });
 
 // 3. Middlewares
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // 4. Configuración de Claves y BD
 const MONGO_URI = process.env.MONGO_URI;
@@ -99,21 +100,40 @@ io.on('connection', (socket) => {
   });
 });
 
-// 7. RUTA DE REGISTRO
+// 
+
+// 7. RUTA DE REGISTRO (CON VALIDACIÓN DE CONTRASEÑA SEGURA)
 app.post('/register', async (req, res) => {
   try {
     const { username, password } = req.body;
+
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
+
+    if (!passwordRegex.test(password)) {
+      return res.status(400).json({ 
+        message: "La contraseña es muy débil. Debe tener al menos 8 caracteres, una mayúscula, una minúscula, un número y un símbolo." 
+      });
+    }
+
     const existingUser = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i' } });
     if (existingUser) return res.status(400).json({ message: "El nombre de usuario ya existe." });
+    
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
+    
     const newUser = new User({ username, password: hashedPassword });
     const savedUser = await newUser.save();
+    
     const expiresIn = '1h';
     const token = jwt.sign({ userId: savedUser._id, username: savedUser.username }, JWT_SECRET, { expiresIn: expiresIn });
     const profilePicForFrontend = savedUser.profilePictureUrl || DEFAULT_PROFILE_PIC;
+    
     res.status(201).json({ message: "¡Usuario registrado e iniciado sesión!", token: token, userId: savedUser._id, username: savedUser.username, profilePictureUrl: profilePicForFrontend, bio: savedUser.bio });
-  } catch (error) { res.status(500).json({ message: "Error en el servidor." }); }
+  
+  } catch (error) { 
+    console.error("Error en register:", error);
+    res.status(500).json({ message: "Error en el servidor." }); 
+  }
 });
 
 // 8. RUTA DE LOGIN
@@ -152,7 +172,6 @@ app.post('/conversations', authMiddleware, async (req, res) => {
     if (!otherUser) return res.status(404).json({ message: "El usuario no existe." });
     if (otherUser._id.toString() === myId) return res.status(400).json({ message: "No puedes enviarte una solicitud a ti mismo." });
     
-    // Verificar bloqueos
     const iBlockedThem = await Block.findOne({ blockerId: myId, blockedId: otherUser._id });
     if (iBlockedThem) return res.status(403).json({ message: "Has bloqueado a este usuario. Debes desbloquearlo para iniciar un chat." });
     const theyBlockedMe = await Block.findOne({ blockerId: otherUser._id, blockedId: myId });
@@ -234,8 +253,12 @@ app.get('/conversations', authMiddleware, async (req, res) => {
         if (b.blockedId.toString() === myId) blockedUserIds.add(b.blockerId.toString());
     });
 
+// Dentro de app.get('/conversations', ...)
+    
     const conversationsWithBlockStatus = conversations.map(conv => {
-        const convObj = conv.toObject();
+        
+        const convObj = conv.toObject({ flattenMaps: true }); 
+
         if (!convObj.isGroup) {
             const other = convObj.participants.find(p => p._id.toString() !== myId);
             if (other && blockedUserIds.has(other._id.toString())) {
@@ -296,7 +319,6 @@ app.post('/conversations/:id/accept', authMiddleware, async (req, res) => {
   }
 });
 
-// --- NUEVO: RUTA PARA RECHAZAR SOLICITUD ---
 app.post('/conversations/:id/reject', authMiddleware, async (req, res) => {
   try {
     const { id: conversationId } = req.params;
@@ -306,12 +328,10 @@ app.post('/conversations/:id/reject', authMiddleware, async (req, res) => {
     if (!conversation) return res.status(404).json({ message: "Solicitud no encontrada." });
     if (conversation.status !== 'pending') return res.status(400).json({ message: "Esta solicitud ya no está pendiente." });
     
-    // Solo el receptor (no el iniciador) puede rechazar
     if (conversation.initiatedBy.toString() === myId) {
         return res.status(403).json({ message: "No puedes rechazar tu propia solicitud." });
     }
 
-    // Eliminamos la conversación por completo
     await Conversation.findByIdAndDelete(conversationId);
 
     res.status(200).json({ message: "Solicitud rechazada." });
@@ -321,8 +341,9 @@ app.post('/conversations/:id/reject', authMiddleware, async (req, res) => {
   }
 });
 
-// --- 12. RUTAS DE MENSAJES ---
+// --- 12. RUTAS DE MENSAJES (BLOQUE COMPLETO CORREGIDO) ---
 
+// A. OBTENER MENSAJES (Cargar chat)
 app.get('/conversations/:id/messages', authMiddleware, async (req, res) => {
   try {
     const { id: conversationId } = req.params;
@@ -347,12 +368,14 @@ app.get('/conversations/:id/messages', authMiddleware, async (req, res) => {
   }
 });
 
+// B. ENVIAR MENSAJE DE SOLO TEXTO
 app.post('/conversations/:id/messages', authMiddleware, async (req, res) => {
   try {
     const { id: conversationId } = req.params;
     const myId = req.user.userId;
-    const { content } = req.body;
+    const { content } = req.body; 
     
+    // 1. Validaciones
     const conversation = await Conversation.findById(conversationId);
     if (!conversation || !conversation.participants.includes(myId) || conversation.status !== 'active') {
        return res.status(403).json({ message: "No autorizado." });
@@ -366,28 +389,33 @@ app.post('/conversations/:id/messages', authMiddleware, async (req, res) => {
       if (theyBlockedMe) return res.status(403).json({ message: "Este usuario te ha bloqueado." });
     }
 
+    // 2. Unread counts
     conversation.deletedBy = conversation.deletedBy || [];
-    
     conversation.participants.forEach(pId => {
       const pIdString = pId.toString();
-      if (pIdString !== myId) {
-        if (!conversation.deletedBy.includes(pIdString)) {
-            const socketId = userSocketMap[pIdString];
-            const activeChatId = activeChatMap[socketId];
-            if (activeChatId !== conversationId) {
-                const currentCount = conversation.unreadCounts.get(pIdString) || 0;
-                conversation.unreadCounts.set(pIdString, currentCount + 1);
-            }
-        }
+      if (pIdString !== myId && !conversation.deletedBy.includes(pIdString)) {
+          const socketId = userSocketMap[pIdString];
+          const activeChatId = activeChatMap[socketId];
+          if (activeChatId !== conversationId) {
+              const currentCount = conversation.unreadCounts.get(pIdString) || 0;
+              conversation.unreadCounts.set(pIdString, currentCount + 1);
+          }
       }
     });
     
     await conversation.save();
     
-    const newMessage = new Message({ conversationId: conversationId, sender: myId, content: content, type: 'text' });
+    // 3. Guardar Mensaje
+    const newMessage = new Message({ 
+        conversationId: conversationId, 
+        sender: myId, 
+        content: content, 
+        type: 'text' 
+    });
     const savedMessage = await newMessage.save();
-    const populatedMessage = await Message.findById(savedMessage._id).populate('sender', 'username profilePictureUrl');
     
+    // 4. Emitir Socket
+    const populatedMessage = await Message.findById(savedMessage._id).populate('sender', 'username profilePictureUrl');
     const populatedConv = await Conversation.findById(conversation._id)
         .populate('participants', 'username profilePictureUrl bio')
         .populate('groupAdmin', 'username')
@@ -406,8 +434,267 @@ app.post('/conversations/:id/messages', authMiddleware, async (req, res) => {
 
     res.status(201).json(populatedMessage);
   } catch (error) {
-    console.error("Error en POST messages:", error);
-    res.status(500).json({ message: "Error en el servidor." });
+    console.error("Error en POST messages (texto):", error);
+    res.status(500).json({ message: "Error al enviar texto." });
+  }
+});
+
+// D. BORRADO MASIVO
+app.post('/messages/bulk-delete', authMiddleware, async (req, res) => {
+  try {
+    const { messageIds } = req.body;
+    const myId = req.user.userId;
+    const myUsername = req.user.username;
+
+    if (!messageIds || messageIds.length === 0) return res.status(400).json({ message: "Sin selección." });
+
+    const messages = await Message.find({ _id: { $in: messageIds } });
+    if (messages.length === 0) return res.status(404).json({ message: "No encontrados." });
+
+    const conversationId = messages[0].conversationId;
+    const updates = [];
+
+    for (const message of messages) {
+        if (message.sender.toString() !== myId) continue;
+        const mediaCount = message.mediaUrls ? message.mediaUrls.length : 0;
+        const hasVideo = message.type === 'video';
+        
+        let placeholder = `**${myUsername}** ha borrado este mensaje`;
+        if (message.type === 'mixed') placeholder = `**${myUsername}** ha borrado estos archivos`;
+        else if (hasVideo) placeholder = mediaCount > 1 ? `**${myUsername}** ha borrado videos` : `**${myUsername}** ha borrado video`;
+        else if (mediaCount > 0) placeholder = mediaCount > 1 ? `**${myUsername}** ha borrado imágenes` : `**${myUsername}** ha borrado imagen`;
+
+        message.content = placeholder;
+        message.mediaUrls = [];
+        message.type = 'text';
+        message.isDeleted = true;
+        updates.push(message.save());
+    }
+
+    await Promise.all(updates);
+
+    const conversation = await Conversation.findById(conversationId);
+    if (conversation) {
+        const populatedMessages = await Message.find({ _id: { $in: messageIds } }).populate('sender', 'username profilePictureUrl');
+        conversation.participants.forEach(pId => {
+            const socketId = userSocketMap[pId.toString()];
+            if (socketId) io.to(socketId).emit('messagesBulkUpdated', populatedMessages);
+        });
+    }
+    res.status(200).json({ message: "Eliminados." });
+  } catch (error) {
+    console.error("Error bulk-delete:", error);
+    res.status(500).json({ message: "Error al eliminar." });
+  }
+});
+
+// E. BORRADO INDIVIDUAL
+app.delete('/messages/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id: messageId } = req.params;
+    const myId = req.user.userId;
+    const myUsername = req.user.username;
+
+    const message = await Message.findById(messageId);
+    if (!message) return res.status(404).json({ message: "No encontrado." });
+    if (message.sender.toString() !== myId) return res.status(403).json({ message: "No autorizado." });
+
+    const mediaCount = message.mediaUrls ? message.mediaUrls.length : 0;
+    const placeholder = getDeletePlaceholder(myUsername, message.type, mediaCount);
+
+    message.content = placeholder;
+    message.mediaUrls = []; 
+    message.type = 'text';
+    message.isDeleted = true;
+    
+    const updatedMessage = await message.save();
+    const populatedMessage = await Message.findById(updatedMessage._id).populate('sender', 'username profilePictureUrl');
+
+    const conversation = await Conversation.findById(message.conversationId);
+    if (conversation) {
+        conversation.participants.forEach(pId => {
+            const socketId = userSocketMap[pId.toString()];
+            if (socketId) io.to(socketId).emit('messageUpdated', populatedMessage);
+        });
+    }
+    res.status(200).json({ message: "Eliminado." });
+  } catch (error) {
+    console.error("Error delete:", error);
+    res.status(500).json({ message: "Error al eliminar." });
+  }
+});
+
+// --- RUTA INDIVIDUAL PARA "BORRAR" MENSAJE (Soft Delete) ---
+app.delete('/messages/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id: messageId } = req.params;
+    const myId = req.user.userId;
+    const myUsername = req.user.username;
+
+    const message = await Message.findById(messageId);
+    if (!message) return res.status(404).json({ message: "Mensaje no encontrado." });
+
+    if (message.sender.toString() !== myId) {
+        return res.status(403).json({ message: "No puedes borrar mensajes de otros." });
+    }
+
+    const mediaCount = message.mediaUrls ? message.mediaUrls.length : 0;
+    const placeholder = getDeletePlaceholder(myUsername, message.type, mediaCount);
+
+    message.content = placeholder;
+    message.mediaUrls = []; 
+    message.type = 'text';
+    message.isDeleted = true; // --- NUEVO: Bandera de borrado
+    
+    const updatedMessage = await message.save();
+    const populatedMessage = await Message.findById(updatedMessage._id).populate('sender', 'username profilePictureUrl');
+
+    const conversation = await Conversation.findById(message.conversationId);
+    if (conversation) {
+        conversation.participants.forEach(pId => {
+            const socketId = userSocketMap[pId.toString()];
+            if (socketId) {
+                io.to(socketId).emit('messageUpdated', populatedMessage);
+            }
+        });
+    }
+
+    res.status(200).json({ message: "Mensaje eliminado." });
+
+  } catch (error) {
+    console.error("Error en DELETE /messages/:id", error);
+    res.status(500).json({ message: "Error al eliminar mensaje." });
+  }
+});
+
+// - Reemplaza toda la ruta "C. ENVIAR ARCHIVOS" con esto:
+
+// C. ENVIAR ARCHIVOS (SEPARADOS: UNO POR MENSAJE)
+app.post('/conversations/:id/messages/media', authMiddleware, upload.array('files', 5), async (req, res) => {
+  try {
+    const { id: conversationId } = req.params;
+    const myId = req.user.userId;
+    const { content } = req.body; 
+    
+    // 1. Validaciones iniciales
+    const conversation = await Conversation.findById(conversationId);
+    if (!conversation || !conversation.participants.includes(myId) || conversation.status !== 'active') {
+       return res.status(403).json({ message: "No autorizado." });
+    }
+
+    if (!conversation.isGroup) {
+      const otherUserId = conversation.participants.find(p => p.toString() !== myId);
+      const iBlockedThem = await Block.findOne({ blockerId: myId, blockedId: otherUserId });
+      if (iBlockedThem) return res.status(403).json({ message: "Has bloqueado a este usuario." });
+      const theyBlockedMe = await Block.findOne({ blockerId: otherUserId, blockedId: myId });
+      if (theyBlockedMe) return res.status(403).json({ message: "Este usuario te ha bloqueado." });
+    }
+
+    if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ message: "No se enviaron archivos." });
+    }
+
+    // Validación .exe
+    const forbiddenExtensions = ['.exe', '.bat', '.sh', '.com', '.cmd', '.msi'];
+    const hasForbidden = req.files.some(file => {
+        const ext = file.originalname.toLowerCase().slice(file.originalname.lastIndexOf('.'));
+        return forbiddenExtensions.includes(ext);
+    });
+    if (hasForbidden) return res.status(400).json({ message: "No se permiten archivos ejecutables (.exe)." });
+
+    // 2. Subida a Cloudinary (Esto se mantiene igual, subimos todo junto para eficiencia)
+    const uploadPromises = req.files.map(file => {
+        return new Promise((resolve, reject) => {
+            const isDocument = !file.mimetype.startsWith('image') && !file.mimetype.startsWith('video');
+            let cleanName = file.originalname.replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "");
+            
+            if (!isDocument) cleanName = cleanName.replace(/\.[^/.]+$/, "");
+            
+            const customPublicId = `${Date.now()}_${cleanName}`;
+
+            const uploadStream = cloudinary.uploader.upload_stream(
+                { 
+                    folder: "nexo_chat_media",
+                    resource_type: isDocument ? "raw" : "auto", 
+                    public_id: customPublicId,
+                },
+                (error, result) => {
+                    if (error) return reject(error);
+                    resolve(result);
+                }
+            );
+            uploadStream.end(file.buffer);
+        });
+    });
+
+    const results = await Promise.all(uploadPromises);
+
+    // 3. Crear mensajes separados (NUEVA LÓGICA)
+    const createdMessages = [];
+    
+    // Preparamos la conversación para emitir actualización
+    const populatedConv = await Conversation.findById(conversation._id)
+        .populate('participants', 'username profilePictureUrl bio')
+        .populate('groupAdmin', 'username')
+        .populate('groupFounder', 'username');
+
+    // Actualizar contadores de no leídos (sumamos la cantidad de archivos, no solo 1)
+    conversation.deletedBy = [];
+    conversation.participants.forEach(pId => {
+      const pIdString = pId.toString();
+      if (pIdString !== myId) {
+          const socketId = userSocketMap[pId.toString()];
+          const activeChatId = activeChatMap[socketId];
+          // Si no está viendo el chat, aumentamos el contador por CADA archivo enviado
+          if (activeChatId !== conversationId) {
+              const currentCount = conversation.unreadCounts.get(pIdString) || 0;
+              conversation.unreadCounts.set(pIdString, currentCount + results.length);
+          }
+      }
+    });
+    await conversation.save();
+
+    // Bucle: Crear un mensaje por cada archivo subido
+    for (const [index, result] of results.entries()) {
+        let msgType = 'image';
+        if (result.resource_type === 'video') msgType = 'video';
+        if (result.resource_type === 'raw') msgType = 'mixed'; // Documentos
+
+        // Si el usuario escribió texto, lo ponemos SOLO en el primer mensaje
+        const msgContent = (index === 0) ? (content || '') : '';
+
+        const newMessage = new Message({ 
+            conversationId: conversationId, 
+            sender: myId, 
+            content: msgContent, 
+            type: msgType,
+            mediaUrls: [result.secure_url] // Solo una URL por mensaje
+        });
+
+        const savedMessage = await newMessage.save();
+        const populatedMessage = await Message.findById(savedMessage._id).populate('sender', 'username profilePictureUrl');
+        
+        createdMessages.push(populatedMessage);
+
+        // Emitir Socket por CADA mensaje
+        conversation.participants.forEach(pId => {
+            const socketId = userSocketMap[pId.toString()];
+            if (socketId) {
+                io.to(socketId).emit('newMessage', populatedMessage);
+                // Enviamos actualización de la conversación solo en el último archivo para no saturar
+                if (index === results.length - 1) {
+                    io.to(socketId).emit('conversationUpdated', populatedConv);
+                }
+            }
+        });
+    }
+
+    // Respondemos con el último mensaje creado (o podrías devolver el array)
+    res.status(201).json(createdMessages[createdMessages.length - 1]);
+
+  } catch (error) {
+    console.error("Error en POST media:", error);
+    res.status(500).json({ message: "Error al enviar archivos." });
   }
 });
 
