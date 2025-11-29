@@ -567,7 +567,7 @@ app.delete('/messages/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// - Reemplaza toda la ruta "C. ENVIAR ARCHIVOS" con esto:
+
 
 // C. ENVIAR ARCHIVOS (SEPARADOS: UNO POR MENSAJE)
 app.post('/conversations/:id/messages/media', authMiddleware, upload.array('files', 5), async (req, res) => {
@@ -632,27 +632,31 @@ app.post('/conversations/:id/messages/media', authMiddleware, upload.array('file
     // 3. Crear mensajes separados (NUEVA LÓGICA)
     const createdMessages = [];
     
-    // Preparamos la conversación para emitir actualización
-    const populatedConv = await Conversation.findById(conversation._id)
-        .populate('participants', 'username profilePictureUrl bio')
-        .populate('groupAdmin', 'username')
-        .populate('groupFounder', 'username');
-
-    // Actualizar contadores de no leídos (sumamos la cantidad de archivos, no solo 1)
+    // --- ERROR ESTABA AQUÍ: El populatedConv estaba ANTES de actualizar los contadores ---
+    
+    // Actualizar contadores de no leídos
     conversation.deletedBy = [];
     conversation.participants.forEach(pId => {
       const pIdString = pId.toString();
       if (pIdString !== myId) {
           const socketId = userSocketMap[pId.toString()];
           const activeChatId = activeChatMap[socketId];
-          // Si no está viendo el chat, aumentamos el contador por CADA archivo enviado
+          
           if (activeChatId !== conversationId) {
               const currentCount = conversation.unreadCounts.get(pIdString) || 0;
               conversation.unreadCounts.set(pIdString, currentCount + results.length);
           }
       }
     });
-    await conversation.save();
+    
+    // GUARDAMOS PRIMERO PARA QUE LA BD TENGA LOS CONTADORES NUEVOS
+    await conversation.save(); 
+
+    // --- CORRECCIÓN: AHORA SÍ BUSCAMOS LA CONVERSACIÓN ACTUALIZADA ---
+    const populatedConv = await Conversation.findById(conversation._id)
+        .populate('participants', 'username profilePictureUrl bio')
+        .populate('groupAdmin', 'username')
+        .populate('groupFounder', 'username');
 
     // Bucle: Crear un mensaje por cada archivo subido
     for (const [index, result] of results.entries()) {
